@@ -52,7 +52,7 @@
       const SQL = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${f}` });
 
       // 2. Fetch the SQLite database
-      const dbResp = await fetch('100_EN_maozia.sqlite3');
+      const dbResp = await fetch('20_EN_noham.sqlite3');
       const dbBuffer = await dbResp.arrayBuffer();
       const db = new SQL.Database(new Uint8Array(dbBuffer));
 
