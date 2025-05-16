@@ -1,0 +1,167 @@
+<!-- index.html: Static SMVP page -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Vocabulary SMVP</title>
+  <!-- Warm, minimal styling -->
+  <style>
+    :root {
+      --bg: #FFF8F2;
+      --sidebar-bg: #FFE5D2;
+      --highlight: #FFB47A;
+      --text: #333;
+      --accent: #FF8A3D;
+    }
+    * {box-sizing: border-box;}
+    body, html {margin:0; padding:0; height:100%; font-family: 'Inter', sans-serif; background: var(--bg); color:var(--text);}    
+    #app {display:flex; height:100%;}
+    /* Sidebar */
+    #sidebar { width: 260px; background: var(--sidebar-bg); overflow-y:auto; padding: 1rem; }
+    .word-item { padding: .5rem .75rem; border-radius: 8px; cursor: pointer; transition: background .2s; }
+    .word-item:hover { background: var(--highlight); }
+    .word-item.active { background: var(--accent); color:#fff; }
+    /* Main content */
+    #main { flex:1; padding: 2rem 3rem; overflow-y: auto; }
+    .word-term { font-size: 2rem; color: var(--accent); }
+    .word-translation { font-size: 1.25rem; margin-left:.5rem; }
+    .audio-btn { background: var(--accent); color:#fff; border:none; padding:.35rem .75rem; border-radius:6px; cursor:pointer; margin-left:.5rem; }
+    .section-title { margin-top:1.75rem; font-weight:bold; }
+    .sentence { margin-top:.5rem; }
+    .conv-container { margin-top:1rem; }
+    .conv-bubble { padding:.75rem 1rem; border-radius:12px; max-width:70%; margin:.35rem 0; position:relative; }
+    .left { background: var(--sidebar-bg); margin-right:auto; }
+    .right { background: #FFD3B5; margin-left:auto; }
+    .conv-bubble small { display:block; opacity:.8; margin-top:.25rem; }
+    .video-container { margin-top:1rem; display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    iframe { width:100%; aspect-ratio:16/9; border:none; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="sidebar"></div>
+    <div id="main"><p>Select a word to begin.</p></div>
+  </div>
+
+  <!-- sql.js (SQLite compiled to WASM) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <script>
+    (async () => {
+      // 1. Load sql.js
+      const SQL = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${f}` });
+
+      // 2. Fetch the SQLite database
+      const dbResp = await fetch('100_EN_maozia.sqlite3');
+      const dbBuffer = await dbResp.arrayBuffer();
+      const db = new SQL.Database(new Uint8Array(dbBuffer));
+
+      // 3. Cache DOM refs
+      const sidebar = document.getElementById('sidebar');
+      const main    = document.getElementById('main');
+
+      // 4. Populate word list
+      const wordRows = db.exec('SELECT id, term FROM words ORDER BY id')[0]?.values || [];
+      wordRows.forEach(([id, term]) => {
+        const item = document.createElement('div');
+        item.className = 'word-item';
+        item.textContent = term;
+        item.onclick = () => openLesson(id, item);
+        sidebar.appendChild(item);
+      });
+
+      function clearActive() {
+        document.querySelectorAll('.word-item').forEach(el => el.classList.remove('active'));
+      }
+
+      // 5. Open lesson for a word
+      function openLesson(wordId, clickedEl) {
+        clearActive();
+        clickedEl.classList.add('active');
+
+        // Core data
+        const [[term, translation, audioBlob]] = db.exec(`SELECT term, translation, audio_data FROM words WHERE id=${wordId}`)[0].values;
+        // Examples & conv
+        const sentences = db.exec(`SELECT text, translation, audio_data FROM examples WHERE word_id=${wordId}`)[0]?.values || [];
+        const convRows = db.exec(`
+          SELECT rowid, line_order, speaker_label, text, translation, audio_data
+          FROM conversation_lines
+          WHERE word_id=${wordId}
+          ORDER BY rowid
+        `)[0]?.values || [];
+        // Clips now returns [youtube_url, start_sec]
+        const clips = db.exec(`SELECT youtube_url, start_sec FROM clips WHERE word_id=${wordId}`)[0]?.values || [];
+
+        main.innerHTML = '';
+
+        // Heading
+        const header = document.createElement('div');
+        header.innerHTML = `<span class="word-term">${term}</span><span class="word-translation">— ${translation}</span><button class="audio-btn" id="play-term">▶</button>`;
+        main.appendChild(header);
+        document.getElementById('play-term').onclick = () => playAudio(audioBlob);
+
+        // Sentences
+        if (sentences.length) {
+          const st = document.createElement('div'); st.className='section-title'; st.textContent='Example Sentences';
+          main.appendChild(st);
+          sentences.forEach(([txt, tr, aud]) => {
+            const p = document.createElement('div'); p.className='sentence';
+            p.innerHTML = `${txt} — ${tr}<button class="audio-btn">▶</button>`;
+            p.querySelector('button').onclick = () => playAudio(aud);
+            main.appendChild(p);
+          });
+        }
+
+        // Conversation (grouped by restarting line_order)
+        if (convRows.length) {
+          const st = document.createElement('div'); st.className='section-title'; st.textContent='Conversation';
+          main.appendChild(st);
+
+          let wrapper = null;
+          convRows.forEach(([rowId, order, speaker, txt, tr, aud], idx) => {
+            // New conversation starts when line_order resets to 1 (except first row)
+            if (order === 1 && idx !== 0) {
+              wrapper = null;
+            }
+            if (!wrapper) {
+              wrapper = document.createElement('div');
+              wrapper.className = 'conv-container';
+              main.appendChild(wrapper);
+            }
+            const bubble = document.createElement('div');
+            bubble.className = `conv-bubble ${speaker === 'A' ? 'left' : 'right'}`;
+            bubble.innerHTML = `
+              ${txt}
+              <small>${tr}</small>
+              <button class="audio-btn">▶</button>
+            `;
+            wrapper.appendChild(bubble);
+            bubble.querySelector('button').onclick = () => playAudio(aud);
+          });
+        }
+
+        // Videos (now using only the ID)
+        if (clips.length) {
+          const st = document.createElement('div'); st.className='section-title'; st.textContent='Videos';
+          main.appendChild(st);
+          const grid = document.createElement('div'); grid.className='video-container';
+          clips.forEach(([videoId, start]) => {
+            const iframe = document.createElement('iframe');
+            iframe.src = `https://www.youtube.com/embed/${videoId}?start=${start}&enablejsapi=1`;
+            grid.appendChild(iframe);
+          });
+          main.appendChild(grid);
+        }
+      }
+
+      // Play audio bytes stored as BLOB
+      function playAudio(blobArray) {
+        if (!blobArray) return;
+        const uint8 = new Uint8Array(blobArray);
+        const blob = new Blob([uint8], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        new Audio(url).play();
+      }
+    })();
+  </script>
+</body>
+</html>
